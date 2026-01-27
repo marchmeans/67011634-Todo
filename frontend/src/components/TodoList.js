@@ -1,141 +1,194 @@
-// frontend/src/components/TodoList.js
 import React, { useState, useEffect } from 'react';
 
 const API_URL = 'http://localhost:5001/api';
 
-function TodoList({ username, onLogout }) {
-    const [todos, setTodos] = useState([]);
-    const [newTask, setNewTask] = useState('');
+function TodoList({ username, onLogout, logo }) {
+  const [todos, setTodos] = useState([]);
+  const [newTask, setNewTask] = useState('');
+  const [newDatetime, setNewDatetime] = useState('');
 
-    useEffect(() => {
-        fetchTodos();
-    }, [username]); // Refetch when username changes (e.g., after login)
-
-    // 1. READ: Fetch all todos for the current user
+  useEffect(() => {
     const fetchTodos = async () => {
-        try {
-            const response = await fetch(`${API_URL}/todos/${username}`);
-            
-            if (!response.ok) {
-                console.error('Failed to fetch todos:', response.statusText);
-                return;
-            }
-
-            const data = await response.json();
-            setTodos(data);
-        } catch (err) {
-            console.error('Error fetching todos:', err);
-        }
+      try {
+        const response = await fetch(`${API_URL}/todos/${username}`);
+        const data = await response.json();
+        setTodos(data);
+      } catch (err) {
+        console.error('Error fetching todos:', err);
+      }
     };
+    fetchTodos();
+  }, [username]);
 
-    // 2. CREATE: Add a new todo
-    const handleAddTodo = async (e) => {
-        e.preventDefault();
-        if (!newTask.trim()) return;
+  const handleAddTodo = async (e) => {
+    e.preventDefault();
+    
+    // DEBUG: This will show in your F12 console when you click
+    console.log("Add Task clicked!", { newTask, newDatetime, username });
 
-        try {
-            const response = await fetch(`${API_URL}/todos`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username, task: newTask }),
-            });
+    // FIX: Only block if the task text is empty. 
+    // We remove "!newDatetime" so you can add tasks without a date.
+    if (!newTask.trim()) {
+        alert("Please enter a task description.");
+        return;
+    }
 
-            if (!response.ok) {
-                console.error('Failed to add todo:', response.statusText);
-                return;
-            }
+    try {
+      const response = await fetch(`${API_URL}/todos`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          username: username, 
+          task: newTask, 
+          deadline: newDatetime || null, // Send null if no date is picked
+          status: 'Todo' 
+        }),
+      });
 
-            const newTodo = await response.json();
-            // Add the new item to the beginning of the list
-            setTodos([newTodo, ...todos]); 
-            setNewTask('');
-        } catch (err) {
-            console.error('Error adding todo:', err);
-        }
-    };
+      if (response.ok) {
+        const newTodo = await response.json();
+        setTodos([newTodo, ...todos]);
+        setNewTask('');
+        setNewDatetime('');
+      } else {
+        const errorData = await response.json();
+        console.error('Server rejected the task:', errorData);
+      }
+    } catch (err) {
+      console.error('Network Error: Is your server running on port 5001?', err);
+    }
+  };
 
-    // 3. UPDATE: Toggle the 'done' status
-    const handleToggleDone = async (id, currentDoneStatus) => {
-        const newDoneStatus = !currentDoneStatus;
-        try {
-            const response = await fetch(`${API_URL}/todos/${id}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ done: newDoneStatus }),
-            });
+  const handleUpdateStatus = async (id, newStatus) => {
+    try {
+      await fetch(`${API_URL}/todos/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: newStatus }),
+      });
 
-            if (!response.ok) {
-                console.error('Failed to update todo:', response.statusText);
-                return;
-            }
+      setTodos(prev =>
+        prev.map((todo) =>
+          todo.id === id ? { ...todo, status: newStatus } : todo
+        )
+      );
+    } catch (err) {
+      console.error('Error updating status:', err);
+    }
+  };
 
-            // Update the status in the local state immediately
-            setTodos(todos.map(todo => 
-                todo.id === id ? { ...todo, done: newDoneStatus } : todo
-            ));
-        } catch (err) {
-            console.error('Error toggling done status:', err);
-        }
-    };
+  const handleDeleteTodo = async (id) => {
+    try {
+      await fetch(`${API_URL}/todos/${id}`, { method: 'DELETE' });
+      setTodos(prev => prev.filter((todo) => todo.id !== id));
+    } catch (err) {
+      console.error('Error deleting todo:', err);
+    }
+  };
 
-    // 4. DELETE: Remove a todo item
-    const handleDeleteTodo = async (id) => {
-        try {
-            const response = await fetch(`${API_URL}/todos/${id}`, {
-                method: 'DELETE',
-            });
-            
-            if (!response.ok) {
-                 console.error('Failed to delete todo:', response.statusText);
-                return;
-            }
-
-            // Filter out the deleted item from the state
-            setTodos(todos.filter(todo => todo.id !== id));
-        } catch (err) {
-            console.error('Error deleting todo:', err);
-        }
-    };
-
-    const handleLogout = () => {
-        // Clear storage and trigger state change in App.js
-        localStorage.removeItem('todo_username');
-        onLogout();
-    };
-
+  const renderTaskGroup = (status, bgColor) => {
+    const filteredTasks = todos
+      .filter((t) => (t.status || 'Todo').toLowerCase() === status.toLowerCase())
+      .sort((a, b) => new Date(b.deadline || 0) - new Date(a.deadline || 0));
+  
     return (
-        <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <h2>Todo List for: {username}</h2>
-                <button onClick={handleLogout}>Logout</button>
-            </div>
-            
-            <form onSubmit={handleAddTodo}>
-                <input
-                    type="text"
-                    placeholder="New Task"
-                    value={newTask}
-                    onChange={(e) => setNewTask(e.target.value)}
-                />
-                <button type="submit">Add Task</button>
-            </form>
-
-            <ul>
-                {todos.map(todo => (
-                    <li key={todo.id} style={{ textDecoration: todo.done ? 'line-through' : 'none' }}>
-                        <input
-                            type="checkbox"
-                            checked={!!todo.done} // Convert MySQL's 0/1 to boolean
-                            onChange={() => handleToggleDone(todo.id, todo.done)}
-                        />
-                        {todo.task} 
-                        <small> (Updated: {new Date(todo.updated).toLocaleString()})</small>
-                        <button onClick={() => handleDeleteTodo(todo.id)} style={{ marginLeft: '10px' }}>Delete</button>
-                    </li>
+      <div className="flex-1 min-w-[250px]">
+        <h3 className={`${bgColor} p-3 rounded-t-lg font-bold text-gray-700 shadow-sm`}>{status}</h3>
+        <ul className="bg-gray-50 p-2 rounded-b-lg space-y-2 min-h-[150px] border border-t-0">
+          {filteredTasks.length === 0 && (
+            <p className="text-xs text-gray-400 text-center py-6 italic">No tasks in {status}</p>
+          )}
+          {filteredTasks.map((todo) => (
+            <li key={todo.id} className="bg-white p-3 rounded shadow-sm border border-gray-200 text-sm hover:border-blue-300 transition-colors">
+              <div className="flex justify-between items-start mb-2">
+                <span className="font-semibold text-gray-800">{todo.task}</span>
+                <button onClick={() => handleDeleteTodo(todo.id)} className="text-gray-300 hover:text-red-500 transition-colors">✕</button>
+              </div>
+              
+              <p className="text-[10px] text-gray-500 mb-3 flex items-center gap-1">
+                📅 {todo.deadline ? new Date(todo.deadline).toLocaleString() : 'No deadline'}
+              </p>
+              
+              <div className="flex gap-1 flex-wrap">
+                {['Todo', 'Doing', 'Done'].map(s => (
+                    status !== s && (
+                        <button 
+                            key={s}
+                            onClick={() => handleUpdateStatus(todo.id, s)} 
+                            className={`text-[9px] px-2 py-1 rounded font-bold uppercase tracking-wider ${
+                                s === 'Todo' ? 'bg-gray-100' : s === 'Doing' ? 'bg-blue-50 text-blue-600' : 'bg-green-50 text-green-600'
+                            }`}
+                        >
+                            {s}
+                        </button>
+                    )
                 ))}
-            </ul>
-        </div>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
     );
+  };
+
+  return (
+    <div className="bg-white w-full max-w-6xl rounded-2xl shadow-2xl p-6 md:p-10 border border-gray-100">
+      
+      {/* Header */}
+      <div className="flex flex-col md:flex-row justify-between items-center mb-10 pb-6 border-b border-gray-100 gap-4">
+        <div className="flex items-center gap-5">
+          <img src={logo} alt="CEI" className="h-14 w-14 object-contain" />
+          <div>
+            <h1 className="text-4xl font-black text-gray-900 tracking-tighter">CEI TODO</h1>
+            <div className="flex items-center gap-2 mt-1">
+                <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+                <p className="text-sm text-gray-500 font-medium">
+                    User: <span className="text-blue-600 font-bold">{username}</span>
+                </p>
+            </div>
+          </div>
+        </div>
+        <button onClick={onLogout} className="w-full md:w-auto bg-red-50 text-red-600 px-6 py-2.5 rounded-xl hover:bg-red-600 hover:text-white transition-all duration-200 font-bold text-sm shadow-sm">
+            LOGOUT
+        </button>
+      </div>
+
+      {/* Input Section */}
+      <form onSubmit={handleAddTodo} className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-12 p-5 bg-blue-50/50 rounded-2xl border border-blue-100">
+        <div className="md:col-span-2">
+            <label className="block text-[10px] font-bold text-blue-400 uppercase mb-1 ml-1">Task Description</label>
+            <input
+              type="text"
+              value={newTask}
+              onChange={(e) => setNewTask(e.target.value)}
+              placeholder="Ex: Web Lab1"
+              className="w-full px-4 py-3 border-0 rounded-xl focus:ring-2 focus:ring-blue-400 outline-none shadow-inner"
+            />
+        </div>
+        <div>
+            <label className="block text-[10px] font-bold text-blue-400 uppercase mb-1 ml-1">Deadline (Optional)</label>
+            <input
+              type="datetime-local"
+              value={newDatetime}
+              onChange={(e) => setNewDatetime(e.target.value)}
+              className="w-full px-4 py-3 border-0 rounded-xl focus:ring-2 focus:ring-blue-400 outline-none shadow-inner text-gray-600"
+            />
+        </div>
+        <div className="flex items-end">
+            <button type="submit" className="w-full bg-blue-600 text-white py-3 rounded-xl hover:bg-blue-700 transition-all font-black shadow-lg hover:shadow-blue-200 active:scale-95">
+                + ADD TASK
+            </button>
+        </div>
+      </form>
+
+      {/* Columns */}
+      <div className="flex flex-col md:flex-row gap-8">
+        {renderTaskGroup('Todo', 'bg-gray-100 text-gray-600')}
+        {renderTaskGroup('Doing', 'bg-blue-600 text-white')}
+        {renderTaskGroup('Done', 'bg-emerald-500 text-white')}
+      </div>
+    </div>
+  );
 }
 
 export default TodoList;

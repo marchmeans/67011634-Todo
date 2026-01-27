@@ -1,109 +1,139 @@
-// server.js
-
 const express = require('express');
 const mysql = require('mysql2');
 const cors = require('cors');
+const bcrypt = require('bcrypt'); 
+const multer = require('multer'); 
+const path = require('path');
 
 const app = express();
 const port = 5001;
 
-// Middleware setup
-app.use(cors()); // Allow cross-origin requests from React frontend
-app.use(express.json()); // Enable reading JSON data from request body
+app.use(cors());
+app.use(express.json());
+app.use('/uploads', express.static('uploads'));
 
-// --- MySQL Connection Setup ---
+// Debugging: Log every request to terminal
+app.use((req, res, next) => {
+    console.log(`${req.method} request to ${req.url}`);
+    next();
+});
+
+const storage = multer.diskStorage({
+    destination: './uploads/',
+    filename: (req, file, cb) => {
+        cb(null, 'profile-' + Date.now() + path.extname(file.originalname));
+    }
+});
+const upload = multer({ storage: storage });
+
 const db = mysql.createConnection({
     host: 'localhost',
-    user: 'root', // CHANGE THIS to your MySQL username
-    password: 'CEiAdmin0', // CHANGE THIS to your MySQL password
-    database: 'ceidb' // Ensure this matches your database name
+    user: 'root',
+    password: 'CEiAdmin0',
+    database: 'ceidb'
 });
 
 db.connect(err => {
-    if (err) {
-        console.error('Error connecting to MySQL:', err);
-        return;
-    }
-    console.log('Connected to MySQL Database.');
+    if (err) return console.error('Error:', err);
+    console.log('Connected to MySQL (ceidb).');
 });
 
-// ------------------------------------
-// API: Authentication (Username Only)
-// ------------------------------------
+// --- AUTH ROUTES ---
+
+app.post('/api/register', upload.single('profile_image'), async (req, res) => {
+    const { full_name, username, password } = req.body;
+    const profile_image = req.file ? req.file.filename : null;
+    try {
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const sql = 'INSERT INTO users (full_name, username, password, profile_image) VALUES (?, ?, ?, ?)';
+        db.query(sql, [full_name, username, hashedPassword, profile_image], (err) => {
+            if (err) return res.status(400).send({ message: 'Error or username taken' });
+            res.status(201).send({ success: true });
+        });
+    } catch (err) { res.status(500).send(err); }
+});
+
 app.post('/api/login', (req, res) => {
-    // In this simplified system, we grant "login" access if a username is provided.
-    // WARNING: This is highly insecure and should not be used in a real-world app.
-    const { username } = req.body;
-    if (!username) {
-        return res.status(400).send({ message: 'Username is required' });
-    }
-    
-    // Success response includes the username
-    res.send({ 
-        success: true, 
-        message: 'Login successful', 
-        user: { username: username }
+    const { username, password, captcha_answer, user_captcha_input } = req.body;
+    if (parseInt(user_captcha_input) !== captcha_answer) return res.status(400).send({ message: 'Invalid CAPTCHA' });
+
+    db.query('SELECT * FROM users WHERE username = ?', [username], async (err, results) => {
+        if (err || results.length === 0) return res.status(401).send({ message: 'Auth failed' });
+        const match = await bcrypt.compare(password, results[0].password);
+        if (!match) return res.status(401).send({ message: 'Wrong password' });
+        res.send({ success: true, user: results[0] });
     });
 });
 
-// ------------------------------------
-// API: Todo List (CRUD Operations)
-// ------------------------------------
+// [A5] Google Login Synchronization
+app.post('/api/google-login', (req, res) => {
+    const { username, full_name, google_id } = req.body;
 
-// 1. READ: Get all todos for a specific user
+    // Check if the user already exists by their unique Google ID
+    const checkSql = 'SELECT * FROM users WHERE google_id = ?';
+    db.query(checkSql, [google_id], (err, results) => {
+        if (err) return res.status(500).send(err);
+
+        if (results.length > 0) {
+            // User exists, return their info to log them in
+            res.send({ success: true, user: results[0] });
+        } else {
+            // New Google user, add them to your MySQL users table
+            const insertSql = 'INSERT INTO users (full_name, username, google_id) VALUES (?, ?, ?)';
+            db.query(insertSql, [full_name, username, google_id], (err) => {
+                if (err) return res.status(500).send(err);
+                res.send({ success: true, user: { username, full_name } });
+            });
+        }
+    });
+});
+
+// --- TODO ROUTES (Mapped to your table columns) ---
+
+// 1. Fetch tasks for user
 app.get('/api/todos/:username', (req, res) => {
-    const { username } = req.params;
-    const sql = 'SELECT id, task, done, updated FROM todo WHERE username = ? ORDER BY id DESC';
-    db.query(sql, [username], (err, results) => {
+    const sql = 'SELECT * FROM todo WHERE username = ? ORDER BY target_datetime DESC';
+    db.query(sql, [req.params.username], (err, results) => {
         if (err) return res.status(500).send(err);
-        res.json(results);
+        res.send(results);
     });
 });
 
-// 2. CREATE: Add a new todo item
+// 2. Add task - Uses 'target_datetime' column
 app.post('/api/todos', (req, res) => {
-    const { username, task } = req.body;
-    if (!username || !task) {
-        return res.status(400).send({ message: 'Username and task are required' });
-    }
-    // Note: 'done' defaults to FALSE in the DB schema
-    const sql = 'INSERT INTO todo (username, task) VALUES (?, ?)';
-    db.query(sql, [username, task], (err, result) => {
-        if (err) return res.status(500).send(err);
-        // Return the created item details including the new ID
-        res.status(201).send({ id: result.insertId, username, task, done: 0, updated: new Date() });
-    });
-});
-
-// 3. UPDATE: Toggle the 'done' status
-app.put('/api/todos/:id', (req, res) => {
-    const { id } = req.params;
-    const { done } = req.body; 
+    const { username, task, deadline, status } = req.body; 
+    const sql = 'INSERT INTO todo (username, task, target_datetime, status) VALUES (?, ?, ?, ?)';
     
-    const sql = 'UPDATE todo SET done = ? WHERE id = ?';
-    db.query(sql, [done, id], (err, result) => {
-        if (err) return res.status(500).send(err);
-        if (result.affectedRows === 0) {
-            return res.status(404).send({ message: 'Todo not found' });
+    db.query(sql, [username, task, deadline, status || 'Todo'], (err, result) => {
+        if (err) {
+            console.error("Database Error:", err);
+            return res.status(500).send(err);
         }
-        res.send({ message: 'Todo updated successfully' });
+        res.status(201).send({ 
+            id: result.insertId, 
+            username, 
+            task, 
+            target_datetime: deadline, 
+            status: status || 'Todo' 
+        });
     });
 });
 
-// 4. DELETE: Remove a todo item
+// 3. Update Status
+app.put('/api/todos/:id', (req, res) => {
+    const sql = 'UPDATE todo SET status = ? WHERE id = ?';
+    db.query(sql, [req.body.status, req.params.id], (err) => {
+        if (err) return res.status(500).send(err);
+        res.send({ success: true });
+    });
+});
+
+// 4. Delete
 app.delete('/api/todos/:id', (req, res) => {
-    const { id } = req.params;
-    const sql = 'DELETE FROM todo WHERE id = ?';
-    db.query(sql, [id], (err, result) => {
+    db.query('DELETE FROM todo WHERE id = ?', [req.params.id], (err) => {
         if (err) return res.status(500).send(err);
-        if (result.affectedRows === 0) {
-            return res.status(404).send({ message: 'Todo not found' });
-        }
-        res.send({ message: 'Todo deleted successfully' });
+        res.send({ success: true });
     });
 });
 
-// Start the server
-app.listen(port, () => {
-    console.log(`Server listening at http://localhost:${port}`);
-});
+app.listen(port, () => console.log(`Server at http://localhost:${port}`));
