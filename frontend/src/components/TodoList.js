@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 const API_URL = 'http://localhost:5001/api';
 
@@ -6,18 +6,53 @@ function TodoList({ username, onLogout, logo }) {
   const [todos, setTodos] = useState([]);
   const [newTask, setNewTask] = useState('');
   const [newDatetime, setNewDatetime] = useState('');
+  
+  const [currentImage, setCurrentImage] = useState(localStorage.getItem('todo_profile_image'));
+  const fileInputRef = useRef(null);
 
-  // --- NEW: Profile Image Logic ---
-  // We grab the filename/URL we saved in localStorage during login
-  const profileImage = localStorage.getItem('todo_profile_image');
-
-  // Determine the correct URL: 
-  // If it's a URL (Google), use it directly. If it's a filename, point to our server's uploads.
   const getProfileImageUrl = () => {
-    if (!profileImage || profileImage === 'null') return null;
-    return profileImage.startsWith('http') 
-        ? profileImage 
-        : `http://localhost:5001/uploads/${profileImage}`;
+    if (!currentImage || currentImage === 'null') return null;
+    return currentImage.startsWith('http') 
+        ? currentImage 
+        : `http://localhost:5001/uploads/${currentImage}`;
+  };
+
+  const handleImageClick = () => {
+    fileInputRef.current.click();
+  };
+
+  const handleFileChange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    // Log for debugging
+    console.log("Attempting upload for user:", username);
+
+    const formData = new FormData();
+    formData.append('profile_image', file);
+
+    try {
+      // FIX: Ensure the URL exactly matches your server route
+      const response = await fetch(`${API_URL}/users/profile-image/${username}`, {
+        method: 'PUT',
+        // CRITICAL: Do NOT set Content-Type header. 
+        // The browser sets it automatically with the boundary for FormData.
+        body: formData, 
+      });
+
+      const data = await response.json();
+      
+      if (response.ok) {
+        localStorage.setItem('todo_profile_image', data.profile_image);
+        setCurrentImage(data.profile_image);
+        alert("Profile picture updated!");
+      } else {
+        alert(data.message || "Server rejected the image.");
+      }
+    } catch (err) {
+      console.error("Connection Error:", err);
+      alert("Error connecting to server. Is the backend running on port 5001?");
+    }
   };
 
   useEffect(() => {
@@ -39,7 +74,6 @@ function TodoList({ username, onLogout, logo }) {
         alert("Please enter a task description.");
         return;
     }
-
     try {
       const response = await fetch(`${API_URL}/todos`, {
         method: 'POST',
@@ -51,7 +85,6 @@ function TodoList({ username, onLogout, logo }) {
           status: 'Todo' 
         }),
       });
-
       if (response.ok) {
         const newTodo = await response.json();
         setTodos([newTodo, ...todos]);
@@ -70,12 +103,7 @@ function TodoList({ username, onLogout, logo }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: newStatus }),
       });
-
-      setTodos(prev =>
-        prev.map((todo) =>
-          todo.id === id ? { ...todo, status: newStatus } : todo
-        )
-      );
+      setTodos(prev => prev.map((todo) => todo.id === id ? { ...todo, status: newStatus } : todo));
     } catch (err) {
       console.error('Error updating status:', err);
     }
@@ -91,7 +119,6 @@ function TodoList({ username, onLogout, logo }) {
   };
 
   const renderTaskGroup = (status, bgColor) => {
-    // Sort tasks by deadline (mapped to target_datetime in your DB)
     const filteredTasks = todos
       .filter((t) => (t.status || 'Todo').toLowerCase() === status.toLowerCase())
       .sort((a, b) => new Date(b.target_datetime || 0) - new Date(a.target_datetime || 0));
@@ -109,11 +136,9 @@ function TodoList({ username, onLogout, logo }) {
                 <span className="font-semibold text-gray-800">{todo.task}</span>
                 <button onClick={() => handleDeleteTodo(todo.id)} className="text-gray-300 hover:text-red-500 transition-colors">✕</button>
               </div>
-              
               <p className="text-[10px] text-gray-500 mb-3 flex items-center gap-1">
                 📅 {todo.target_datetime ? new Date(todo.target_datetime).toLocaleString() : 'No deadline'}
               </p>
-              
               <div className="flex gap-1 flex-wrap">
                 {['Todo', 'Doing', 'Done'].map(s => (
                     status !== s && (
@@ -138,29 +163,37 @@ function TodoList({ username, onLogout, logo }) {
 
   return (
     <div className="bg-white w-full max-w-6xl rounded-2xl shadow-2xl p-6 md:p-10 border border-gray-100">
-      
-      {/* Header with Profile Image */}
       <div className="flex flex-col md:flex-row justify-between items-center mb-10 pb-6 border-b border-gray-100 gap-4">
         <div className="flex items-center gap-5">
           <img src={logo} alt="CEI" className="h-14 w-14 object-contain" />
           <div className="flex items-center gap-4 border-l pl-5">
-            {/* --- NEW: User Profile Icon --- */}
-            {getProfileImageUrl() ? (
-                <img 
-                    src={getProfileImageUrl()} 
-                    alt="Profile" 
-                    className="w-12 h-12 rounded-full object-cover border-2 border-blue-500 shadow-sm"
-                />
-            ) : (
-                <div className="w-12 h-12 bg-blue-600 rounded-full flex items-center justify-center text-white font-black text-xl shadow-md">
-                    {username.charAt(0).toUpperCase()}
+            <div className="relative group cursor-pointer" onClick={handleImageClick}>
+                {getProfileImageUrl() ? (
+                    <img 
+                        src={getProfileImageUrl()} 
+                        alt="Profile" 
+                        className="w-14 h-14 rounded-full object-cover border-2 border-blue-500 shadow-sm group-hover:brightness-75 transition-all"
+                    />
+                ) : (
+                    <div className="w-14 h-14 bg-blue-600 rounded-full flex items-center justify-center text-white font-black text-xl shadow-md group-hover:bg-blue-700">
+                        {username ? username.charAt(0).toUpperCase() : '?'}
+                    </div>
+                )}
+                <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                    <span className="text-[9px] bg-black/60 text-white px-2 py-1 rounded-full font-bold">EDIT</span>
                 </div>
-            )}
-            
+                <input 
+                    type="file" 
+                    ref={fileInputRef} 
+                    onChange={handleFileChange} 
+                    className="hidden" 
+                    accept="image/*" 
+                />
+            </div>
             <div>
                 <h1 className="text-2xl font-black text-gray-900 tracking-tighter leading-none">CEI TODO</h1>
                 <p className="text-sm text-gray-500 font-medium mt-1">
-                    Logged in as: <span className="text-blue-600 font-bold">{username}</span>
+                    User: <span className="text-blue-600 font-bold">{username}</span>
                 </p>
             </div>
           </div>
@@ -170,35 +203,20 @@ function TodoList({ username, onLogout, logo }) {
         </button>
       </div>
 
-      {/* Input Section */}
       <form onSubmit={handleAddTodo} className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-12 p-5 bg-blue-50/50 rounded-2xl border border-blue-100">
         <div className="md:col-span-2">
             <label className="block text-[10px] font-bold text-blue-400 uppercase mb-1 ml-1">Task Description</label>
-            <input
-              type="text"
-              value={newTask}
-              onChange={(e) => setNewTask(e.target.value)}
-              placeholder="Ex: Web Lab1"
-              className="w-full px-4 py-3 border-0 rounded-xl focus:ring-2 focus:ring-blue-400 outline-none shadow-inner"
-            />
+            <input type="text" value={newTask} onChange={(e) => setNewTask(e.target.value)} placeholder="Ex: Web Lab1" className="w-full px-4 py-3 border-0 rounded-xl focus:ring-2 focus:ring-blue-400 outline-none shadow-inner" />
         </div>
         <div>
             <label className="block text-[10px] font-bold text-blue-400 uppercase mb-1 ml-1">Deadline (Optional)</label>
-            <input
-              type="datetime-local"
-              value={newDatetime}
-              onChange={(e) => setNewDatetime(e.target.value)}
-              className="w-full px-4 py-3 border-0 rounded-xl focus:ring-2 focus:ring-blue-400 outline-none shadow-inner text-gray-600"
-            />
+            <input type="datetime-local" value={newDatetime} onChange={(e) => setNewDatetime(e.target.value)} className="w-full px-4 py-3 border-0 rounded-xl focus:ring-2 focus:ring-blue-400 outline-none shadow-inner text-gray-600" />
         </div>
         <div className="flex items-end">
-            <button type="submit" className="w-full bg-blue-600 text-white py-3 rounded-xl hover:bg-blue-700 transition-all font-black shadow-lg hover:shadow-blue-200 active:scale-95">
-                + ADD TASK
-            </button>
+            <button type="submit" className="w-full bg-blue-600 text-white py-3 rounded-xl hover:bg-blue-700 transition-all font-black shadow-lg hover:shadow-blue-200 active:scale-95">+ ADD TASK</button>
         </div>
       </form>
 
-      {/* Columns */}
       <div className="flex flex-col md:flex-row gap-8">
         {renderTaskGroup('Todo', 'bg-gray-100 text-gray-600')}
         {renderTaskGroup('Doing', 'bg-blue-600 text-white')}

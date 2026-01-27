@@ -4,6 +4,7 @@ const cors = require('cors');
 const bcrypt = require('bcrypt'); 
 const multer = require('multer'); 
 const path = require('path');
+const fs = require('fs'); // Added for folder checking
 
 const app = express();
 const port = 5001;
@@ -11,7 +12,12 @@ const port = 5001;
 app.use(cors());
 app.use(express.json());
 
-// Serving the uploads folder so the frontend can access local images
+// 1. CRITICAL: Ensure the 'uploads' folder exists
+const uploadDir = './uploads/';
+if (!fs.existsSync(uploadDir)){
+    fs.mkdirSync(uploadDir);
+}
+
 app.use('/uploads', express.static('uploads'));
 
 // Debugging: Log every request to terminal
@@ -21,8 +27,9 @@ app.use((req, res, next) => {
 });
 
 const storage = multer.diskStorage({
-    destination: './uploads/',
+    destination: uploadDir,
     filename: (req, file, cb) => {
+        // Keeps the extension like .png or .jpg from your upload
         cb(null, 'profile-' + Date.now() + path.extname(file.originalname));
     }
 });
@@ -42,7 +49,6 @@ db.connect(err => {
 
 // --- AUTH ROUTES ---
 
-// 1. Register with Profile Image
 app.post('/api/register', upload.single('profile_image'), async (req, res) => {
     const { full_name, username, password } = req.body;
     const profile_image = req.file ? req.file.filename : null;
@@ -56,7 +62,6 @@ app.post('/api/register', upload.single('profile_image'), async (req, res) => {
     } catch (err) { res.status(500).send(err); }
 });
 
-// 2. Standard Login
 app.post('/api/login', (req, res) => {
     const { username, password, captcha_answer, user_captcha_input } = req.body;
     if (parseInt(user_captcha_input) !== captcha_answer) return res.status(400).send({ message: 'Invalid CAPTCHA' });
@@ -65,40 +70,57 @@ app.post('/api/login', (req, res) => {
         if (err || results.length === 0) return res.status(401).send({ message: 'Auth failed' });
         const match = await bcrypt.compare(password, results[0].password);
         if (!match) return res.status(401).send({ message: 'Wrong password' });
-        
-        // Return the whole user object (including profile_image)
         res.send({ success: true, user: results[0] });
     });
 });
 
-// 3. Google Login Synchronization [A5 & Profile Image Support]
 app.post('/api/google-login', (req, res) => {
-    const { username, full_name, google_id, profile_image } = req.body; // Added profile_image
-
+    const { username, full_name, google_id, profile_image } = req.body;
     const checkSql = 'SELECT * FROM users WHERE google_id = ?';
     db.query(checkSql, [google_id], (err, results) => {
         if (err) return res.status(500).send(err);
-
         if (results.length > 0) {
-            // User exists, return user info
             res.send({ success: true, user: results[0] });
         } else {
-            // New Google user, add them including the Google picture URL
             const insertSql = 'INSERT INTO users (full_name, username, google_id, profile_image) VALUES (?, ?, ?, ?)';
-            db.query(insertSql, [full_name, username, google_id, profile_image], (err, result) => {
+            db.query(insertSql, [full_name, username, google_id, profile_image], (err) => {
                 if (err) return res.status(500).send(err);
-                res.send({ 
-                    success: true, 
-                    user: { username, full_name, google_id, profile_image } 
-                });
+                res.send({ success: true, user: { username, full_name, google_id, profile_image } });
             });
         }
+    });
+});
+
+// --- UPDATE PROFILE IMAGE ROUTE ---
+app.put('/api/users/profile-image/:username', upload.single('profile_image'), (req, res) => {
+    const { username } = req.params;
+    const profile_image = req.file ? req.file.filename : null;
+
+    if (!profile_image) {
+        return res.status(400).send({ message: 'No image uploaded' });
+    }
+
+    // Update 'profile_image' column in your 'users' table
+    const sql = 'UPDATE users SET profile_image = ? WHERE username = ?';
+    db.query(sql, [profile_image, username], (err, result) => {
+        if (err) {
+            console.error("Database Error:", err);
+            return res.status(500).send(err);
+        }
+        
+        // Return the new filename so frontend can update its state
+        res.send({ 
+            success: true, 
+            message: 'Profile picture updated!',
+            profile_image: profile_image 
+        });
     });
 });
 
 // --- TODO ROUTES ---
 
 app.get('/api/todos/:username', (req, res) => {
+    // Fetches using 'target_datetime' from your table
     const sql = 'SELECT * FROM todo WHERE username = ? ORDER BY target_datetime DESC';
     db.query(sql, [req.params.username], (err, results) => {
         if (err) return res.status(500).send(err);
@@ -109,7 +131,6 @@ app.get('/api/todos/:username', (req, res) => {
 app.post('/api/todos', (req, res) => {
     const { username, task, deadline, status } = req.body; 
     const sql = 'INSERT INTO todo (username, task, target_datetime, status) VALUES (?, ?, ?, ?)';
-    
     db.query(sql, [username, task, deadline, status || 'Todo'], (err, result) => {
         if (err) return res.status(500).send(err);
         res.status(201).send({ 
