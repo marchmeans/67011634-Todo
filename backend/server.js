@@ -10,6 +10,8 @@ const port = 5001;
 
 app.use(cors());
 app.use(express.json());
+
+// Serving the uploads folder so the frontend can access local images
 app.use('/uploads', express.static('uploads'));
 
 // Debugging: Log every request to terminal
@@ -40,6 +42,7 @@ db.connect(err => {
 
 // --- AUTH ROUTES ---
 
+// 1. Register with Profile Image
 app.post('/api/register', upload.single('profile_image'), async (req, res) => {
     const { full_name, username, password } = req.body;
     const profile_image = req.file ? req.file.filename : null;
@@ -53,6 +56,7 @@ app.post('/api/register', upload.single('profile_image'), async (req, res) => {
     } catch (err) { res.status(500).send(err); }
 });
 
+// 2. Standard Login
 app.post('/api/login', (req, res) => {
     const { username, password, captcha_answer, user_captcha_input } = req.body;
     if (parseInt(user_captcha_input) !== captcha_answer) return res.status(400).send({ message: 'Invalid CAPTCHA' });
@@ -61,36 +65,39 @@ app.post('/api/login', (req, res) => {
         if (err || results.length === 0) return res.status(401).send({ message: 'Auth failed' });
         const match = await bcrypt.compare(password, results[0].password);
         if (!match) return res.status(401).send({ message: 'Wrong password' });
+        
+        // Return the whole user object (including profile_image)
         res.send({ success: true, user: results[0] });
     });
 });
 
-// [A5] Google Login Synchronization
+// 3. Google Login Synchronization [A5 & Profile Image Support]
 app.post('/api/google-login', (req, res) => {
-    const { username, full_name, google_id } = req.body;
+    const { username, full_name, google_id, profile_image } = req.body; // Added profile_image
 
-    // Check if the user already exists by their unique Google ID
     const checkSql = 'SELECT * FROM users WHERE google_id = ?';
     db.query(checkSql, [google_id], (err, results) => {
         if (err) return res.status(500).send(err);
 
         if (results.length > 0) {
-            // User exists, return their info to log them in
+            // User exists, return user info
             res.send({ success: true, user: results[0] });
         } else {
-            // New Google user, add them to your MySQL users table
-            const insertSql = 'INSERT INTO users (full_name, username, google_id) VALUES (?, ?, ?)';
-            db.query(insertSql, [full_name, username, google_id], (err) => {
+            // New Google user, add them including the Google picture URL
+            const insertSql = 'INSERT INTO users (full_name, username, google_id, profile_image) VALUES (?, ?, ?, ?)';
+            db.query(insertSql, [full_name, username, google_id, profile_image], (err, result) => {
                 if (err) return res.status(500).send(err);
-                res.send({ success: true, user: { username, full_name } });
+                res.send({ 
+                    success: true, 
+                    user: { username, full_name, google_id, profile_image } 
+                });
             });
         }
     });
 });
 
-// --- TODO ROUTES (Mapped to your table columns) ---
+// --- TODO ROUTES ---
 
-// 1. Fetch tasks for user
 app.get('/api/todos/:username', (req, res) => {
     const sql = 'SELECT * FROM todo WHERE username = ? ORDER BY target_datetime DESC';
     db.query(sql, [req.params.username], (err, results) => {
@@ -99,16 +106,12 @@ app.get('/api/todos/:username', (req, res) => {
     });
 });
 
-// 2. Add task - Uses 'target_datetime' column
 app.post('/api/todos', (req, res) => {
     const { username, task, deadline, status } = req.body; 
     const sql = 'INSERT INTO todo (username, task, target_datetime, status) VALUES (?, ?, ?, ?)';
     
     db.query(sql, [username, task, deadline, status || 'Todo'], (err, result) => {
-        if (err) {
-            console.error("Database Error:", err);
-            return res.status(500).send(err);
-        }
+        if (err) return res.status(500).send(err);
         res.status(201).send({ 
             id: result.insertId, 
             username, 
@@ -119,7 +122,6 @@ app.post('/api/todos', (req, res) => {
     });
 });
 
-// 3. Update Status
 app.put('/api/todos/:id', (req, res) => {
     const sql = 'UPDATE todo SET status = ? WHERE id = ?';
     db.query(sql, [req.body.status, req.params.id], (err) => {
@@ -128,7 +130,6 @@ app.put('/api/todos/:id', (req, res) => {
     });
 });
 
-// 4. Delete
 app.delete('/api/todos/:id', (req, res) => {
     db.query('DELETE FROM todo WHERE id = ?', [req.params.id], (err) => {
         if (err) return res.status(500).send(err);

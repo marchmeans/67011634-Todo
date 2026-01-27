@@ -7,6 +7,19 @@ function TodoList({ username, onLogout, logo }) {
   const [newTask, setNewTask] = useState('');
   const [newDatetime, setNewDatetime] = useState('');
 
+  // --- NEW: Profile Image Logic ---
+  // We grab the filename/URL we saved in localStorage during login
+  const profileImage = localStorage.getItem('todo_profile_image');
+
+  // Determine the correct URL: 
+  // If it's a URL (Google), use it directly. If it's a filename, point to our server's uploads.
+  const getProfileImageUrl = () => {
+    if (!profileImage || profileImage === 'null') return null;
+    return profileImage.startsWith('http') 
+        ? profileImage 
+        : `http://localhost:5001/uploads/${profileImage}`;
+  };
+
   useEffect(() => {
     const fetchTodos = async () => {
       try {
@@ -22,12 +35,6 @@ function TodoList({ username, onLogout, logo }) {
 
   const handleAddTodo = async (e) => {
     e.preventDefault();
-    
-    // DEBUG: This will show in your F12 console when you click
-    console.log("Add Task clicked!", { newTask, newDatetime, username });
-
-    // FIX: Only block if the task text is empty. 
-    // We remove "!newDatetime" so you can add tasks without a date.
     if (!newTask.trim()) {
         alert("Please enter a task description.");
         return;
@@ -40,7 +47,7 @@ function TodoList({ username, onLogout, logo }) {
         body: JSON.stringify({ 
           username: username, 
           task: newTask, 
-          deadline: newDatetime || null, // Send null if no date is picked
+          deadline: newDatetime || null, 
           status: 'Todo' 
         }),
       });
@@ -50,12 +57,9 @@ function TodoList({ username, onLogout, logo }) {
         setTodos([newTodo, ...todos]);
         setNewTask('');
         setNewDatetime('');
-      } else {
-        const errorData = await response.json();
-        console.error('Server rejected the task:', errorData);
       }
     } catch (err) {
-      console.error('Network Error: Is your server running on port 5001?', err);
+      console.error('Network Error:', err);
     }
   };
 
@@ -87,13 +91,14 @@ function TodoList({ username, onLogout, logo }) {
   };
 
   const renderTaskGroup = (status, bgColor) => {
+    // Sort tasks by deadline (mapped to target_datetime in your DB)
     const filteredTasks = todos
       .filter((t) => (t.status || 'Todo').toLowerCase() === status.toLowerCase())
-      .sort((a, b) => new Date(b.deadline || 0) - new Date(a.deadline || 0));
+      .sort((a, b) => new Date(b.target_datetime || 0) - new Date(a.target_datetime || 0));
   
     return (
       <div className="flex-1 min-w-[250px]">
-        <h3 className={`${bgColor} p-3 rounded-t-lg font-bold text-gray-700 shadow-sm`}>{status}</h3>
+        <h3 className={`${bgColor} p-3 rounded-t-lg font-bold text-gray-700 shadow-sm uppercase text-xs tracking-widest`}>{status}</h3>
         <ul className="bg-gray-50 p-2 rounded-b-lg space-y-2 min-h-[150px] border border-t-0">
           {filteredTasks.length === 0 && (
             <p className="text-xs text-gray-400 text-center py-6 italic">No tasks in {status}</p>
@@ -106,7 +111,7 @@ function TodoList({ username, onLogout, logo }) {
               </div>
               
               <p className="text-[10px] text-gray-500 mb-3 flex items-center gap-1">
-                📅 {todo.deadline ? new Date(todo.deadline).toLocaleString() : 'No deadline'}
+                📅 {todo.target_datetime ? new Date(todo.target_datetime).toLocaleString() : 'No deadline'}
               </p>
               
               <div className="flex gap-1 flex-wrap">
@@ -116,7 +121,7 @@ function TodoList({ username, onLogout, logo }) {
                             key={s}
                             onClick={() => handleUpdateStatus(todo.id, s)} 
                             className={`text-[9px] px-2 py-1 rounded font-bold uppercase tracking-wider ${
-                                s === 'Todo' ? 'bg-gray-100' : s === 'Doing' ? 'bg-blue-50 text-blue-600' : 'bg-green-50 text-green-600'
+                                s === 'Todo' ? 'bg-gray-100 text-gray-500' : s === 'Doing' ? 'bg-blue-50 text-blue-600' : 'bg-green-50 text-green-600'
                             }`}
                         >
                             {s}
@@ -134,16 +139,28 @@ function TodoList({ username, onLogout, logo }) {
   return (
     <div className="bg-white w-full max-w-6xl rounded-2xl shadow-2xl p-6 md:p-10 border border-gray-100">
       
-      {/* Header */}
+      {/* Header with Profile Image */}
       <div className="flex flex-col md:flex-row justify-between items-center mb-10 pb-6 border-b border-gray-100 gap-4">
         <div className="flex items-center gap-5">
           <img src={logo} alt="CEI" className="h-14 w-14 object-contain" />
-          <div>
-            <h1 className="text-4xl font-black text-gray-900 tracking-tighter">CEI TODO</h1>
-            <div className="flex items-center gap-2 mt-1">
-                <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
-                <p className="text-sm text-gray-500 font-medium">
-                    User: <span className="text-blue-600 font-bold">{username}</span>
+          <div className="flex items-center gap-4 border-l pl-5">
+            {/* --- NEW: User Profile Icon --- */}
+            {getProfileImageUrl() ? (
+                <img 
+                    src={getProfileImageUrl()} 
+                    alt="Profile" 
+                    className="w-12 h-12 rounded-full object-cover border-2 border-blue-500 shadow-sm"
+                />
+            ) : (
+                <div className="w-12 h-12 bg-blue-600 rounded-full flex items-center justify-center text-white font-black text-xl shadow-md">
+                    {username.charAt(0).toUpperCase()}
+                </div>
+            )}
+            
+            <div>
+                <h1 className="text-2xl font-black text-gray-900 tracking-tighter leading-none">CEI TODO</h1>
+                <p className="text-sm text-gray-500 font-medium mt-1">
+                    Logged in as: <span className="text-blue-600 font-bold">{username}</span>
                 </p>
             </div>
           </div>

@@ -24,40 +24,36 @@ function Login({ onLogin, logo }) {
         generateCaptcha();
     }, [isRegister]);
 
-    // --- Google Login Handler [Fixed for A5 Sync] ---
     const handleGoogleSuccess = async (credentialResponse) => {
         try {
             setError(''); 
-            // Decode token to get user details
             const decoded = jwtDecode(credentialResponse.credential);
             
-            // Map Google data to match your database columns
+            // 1. Capture Google picture URL to save to database
             const googleUser = {
                 username: decoded.email.split('@')[0], 
                 full_name: decoded.name,
-                google_id: decoded.sub
+                google_id: decoded.sub,
+                profile_image: decoded.picture // Google avatar URL
             };
 
-            // Synchronize with your backend /api/google-login
             const response = await fetch(`${API_URL}/google-login`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(googleUser),
             });
 
-            // If the server returns an error page (HTML) instead of JSON, 
-            // this is where the "Unexpected token <" error comes from.
             const data = await response.json();
-            
             if (response.ok) {
+                // 2. Save both username and image to localStorage
                 localStorage.setItem('todo_username', data.user.username);
+                localStorage.setItem('todo_profile_image', data.user.profile_image); 
                 onLogin(data.user.username);
             } else {
                 setError(data.message || 'Google synchronization failed.');
             }
         } catch (err) {
-            console.error('Connection error:', err);
-            setError('Google synchronization failed. Ensure server.js is running on port 5001.');
+            setError('Google synchronization failed. Ensure server.js is running.');
         }
     };
 
@@ -96,18 +92,21 @@ function Login({ onLogin, logo }) {
             if (response.ok) {
                 if (isRegister) {
                     setIsRegister(false);
-                    alert('Registration successful!');
+                    alert('Registration successful! Please login.');
                 } else {
+                    // 3. Save standard user image filename to localStorage
                     localStorage.setItem('todo_username', data.user.username);
+                    localStorage.setItem('todo_profile_image', data.user.profile_image); 
                     onLogin(data.user.username);
                 }
             } else {
                 setError(data.message || 'Auth failed.');
                 generateCaptcha();
             }
-        } catch (err) { setError('Connection error. Check your backend terminal.'); }
+        } catch (err) { setError('Connection error.'); }
     };
 
+    // ... (rest of your return JSX remains the same)
     return (
         <div className="bg-white w-full max-w-md mx-auto rounded-xl shadow-lg p-8">
             <div className="flex flex-col items-center mb-6">
