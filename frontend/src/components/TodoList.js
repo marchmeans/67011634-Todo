@@ -60,7 +60,7 @@ function TodoList({ username, onLogout, logo }) {
       try {
         const response = await fetch(`${API_URL}/todos/${username}`);
         const data = await response.json();
-        setTodos(data);
+        setTodos(todos);
       } catch (err) {
         console.error('Error fetching todos:', err);
       }

@@ -1,161 +1,250 @@
+require('dotenv').config();
+
 const express = require('express');
 const mysql = require('mysql2');
 const cors = require('cors');
-const bcrypt = require('bcrypt'); 
-const multer = require('multer'); 
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const multer = require('multer');
 const path = require('path');
-const fs = require('fs'); // Added for folder checking
+const fs = require('fs');
+const axios = require('axios');
 
 const app = express();
-const port = 5001;
+const port = process.env.PORT || 5001;
 
+/* ===================== MIDDLEWARE ===================== */
 app.use(cors());
 app.use(express.json());
 
-// 1. CRITICAL: Ensure the 'uploads' folder exists
+/* ===================== UPLOAD SETUP ===================== */
 const uploadDir = './uploads/';
-if (!fs.existsSync(uploadDir)){
+if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir);
 }
 
 app.use('/uploads', express.static('uploads'));
 
-// Debugging: Log every request to terminal
-app.use((req, res, next) => {
-    console.log(`${req.method} request to ${req.url}`);
-    next();
-});
-
 const storage = multer.diskStorage({
     destination: uploadDir,
     filename: (req, file, cb) => {
-        // Keeps the extension like .png or .jpg from your upload
         cb(null, 'profile-' + Date.now() + path.extname(file.originalname));
     }
 });
-const upload = multer({ storage: storage });
+const upload = multer({ storage });
 
+/* ===================== DATABASE ===================== */
 const db = mysql.createConnection({
-    host: 'localhost',
-    user: 'root',
-    password: 'CEiAdmin0',
-    database: 'ceidb'
+    host: process.env.DB_HOST,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME
 });
 
 db.connect(err => {
-    if (err) return console.error('Error:', err);
-    console.log('Connected to MySQL (ceidb).');
+    if (err) {
+        console.error('Database error:', err);
+        return;
+    }
+    console.log('Connected to MySQL');
 });
 
-// --- AUTH ROUTES ---
-
-app.post('/api/register', upload.single('profile_image'), async (req, res) => {
-    const { full_name, username, password } = req.body;
-    const profile_image = req.file ? req.file.filename : null;
-    try {
-        const hashedPassword = await bcrypt.hash(password, 10);
-        const sql = 'INSERT INTO users (full_name, username, password, profile_image) VALUES (?, ?, ?, ?)';
-        db.query(sql, [full_name, username, hashedPassword, profile_image], (err) => {
-            if (err) return res.status(400).send({ message: 'Error or username taken' });
-            res.status(201).send({ success: true });
-        });
-    } catch (err) { res.status(500).send(err); }
-});
-
-app.post('/api/login', (req, res) => {
-    const { username, password, captcha_answer, user_captcha_input } = req.body;
-    if (parseInt(user_captcha_input) !== captcha_answer) return res.status(400).send({ message: 'Invalid CAPTCHA' });
-
-    db.query('SELECT * FROM users WHERE username = ?', [username], async (err, results) => {
-        if (err || results.length === 0) return res.status(401).send({ message: 'Auth failed' });
-        const match = await bcrypt.compare(password, results[0].password);
-        if (!match) return res.status(401).send({ message: 'Wrong password' });
-        res.send({ success: true, user: results[0] });
-    });
-});
-
-app.post('/api/google-login', (req, res) => {
-    const { username, full_name, google_id, profile_image } = req.body;
-    const checkSql = 'SELECT * FROM users WHERE google_id = ?';
-    db.query(checkSql, [google_id], (err, results) => {
-        if (err) return res.status(500).send(err);
-        if (results.length > 0) {
-            res.send({ success: true, user: results[0] });
-        } else {
-            const insertSql = 'INSERT INTO users (full_name, username, google_id, profile_image) VALUES (?, ?, ?, ?)';
-            db.query(insertSql, [full_name, username, google_id, profile_image], (err) => {
-                if (err) return res.status(500).send(err);
-                res.send({ success: true, user: { username, full_name, google_id, profile_image } });
-            });
-        }
-    });
-});
-
-// --- UPDATE PROFILE IMAGE ROUTE ---
-app.put('/api/users/profile-image/:username', upload.single('profile_image'), (req, res) => {
-    const { username } = req.params;
-    const profile_image = req.file ? req.file.filename : null;
-
-    if (!profile_image) {
-        return res.status(400).send({ message: 'No image uploaded' });
+/* ===================== RECAPTCHA ===================== */
+async function verifyCaptcha(token) {
+    if (!token) {
+        console.log('❌ No captcha token received');
+        return false;
     }
 
-    // Update 'profile_image' column in your 'users' table
-    const sql = 'UPDATE users SET profile_image = ? WHERE username = ?';
-    db.query(sql, [profile_image, username], (err, result) => {
-        if (err) {
-            console.error("Database Error:", err);
-            return res.status(500).send(err);
+    console.log('📝 Token received:', token.substring(0, 50) + '...');
+    console.log('🔑 Secret key exists:', !!process.env.RECAPTCHA_SECRET);
+
+    try {
+        const params = new URLSearchParams();
+        params.append('secret', process.env.RECAPTCHA_SECRET);
+        params.append('response', token);
+
+        const response = await axios.post(
+            'https://www.google.com/recaptcha/api/siteverify',
+            params
+        );
+
+        console.log('🟡 Google captcha response:', response.data);
+
+        return response.data.success;
+    } catch (err) {
+        console.error('Captcha verification error:', err);
+        return false;
+    }
+}
+
+
+/* ===================== AUTH ROUTES ===================== */
+
+// REGISTER
+app.post('/api/register', upload.single('profile_image'), async (req, res) => {
+    const { full_name, username, password, captchaToken } = req.body;
+
+    const captchaValid = await verifyCaptcha(captchaToken);
+    if (!captchaValid) {
+        return res.status(400).json({ message: 'Captcha failed' });
+    }
+
+    try {
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const profile_image = req.file ? req.file.filename : null;
+
+        const sql = `
+            INSERT INTO users (full_name, username, password, profile_image)
+            VALUES (?, ?, ?, ?)
+        `;
+
+        db.query(sql, [full_name, username, hashedPassword, profile_image], err => {
+            if (err) {
+                return res.status(400).json({ message: 'Username already exists' });
+            }
+            res.status(201).json({ success: true });
+        });
+    } catch {
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// LOGIN
+app.post('/api/login', async (req, res) => {
+    const { username, password, captchaToken } = req.body;
+
+    const captchaValid = await verifyCaptcha(captchaToken);
+    if (!captchaValid) {
+        return res.status(400).json({ message: 'Captcha failed' });
+    }
+
+    db.query('SELECT * FROM users WHERE username = ?', [username], async (err, results) => {
+        if (err || results.length === 0) {
+            return res.status(401).json({ message: 'Invalid credentials' });
         }
-        
-        // Return the new filename so frontend can update its state
-        res.send({ 
-            success: true, 
-            message: 'Profile picture updated!',
-            profile_image: profile_image 
-        });
+
+        const match = await bcrypt.compare(password, results[0].password);
+        if (!match) {
+            return res.status(401).json({ message: 'Invalid credentials' });
+        }
+
+        const token = jwt.sign({ username: results[0].username }, process.env.JWT_SECRET || 'your-secret-key');
+        res.json({ success: true, token, user: results[0] });
     });
 });
 
-// --- TODO ROUTES ---
+// GOOGLE LOGIN
+app.post('/api/google-login', (req, res) => {
+    const { username, full_name, profile_image } = req.body;
 
+    db.query(
+        'SELECT * FROM users WHERE username = ?',
+        [username],
+        (err, results) => {
+            if (err) return res.status(500).json({ message: 'Server error' });
+
+            if (results.length > 0) {
+                const token = jwt.sign({ username: results[0].username }, process.env.JWT_SECRET || 'your-secret-key');
+                return res.json({ success: true, token, user: results[0] });
+            }
+
+            const sql = `
+                INSERT INTO users (full_name, username, profile_image)
+                VALUES (?, ?, ?)
+            `;
+
+            db.query(sql, [full_name, username, profile_image], (err, result) => {
+                if (err) return res.status(500).json({ message: 'Insert failed' });
+                const token = jwt.sign({ username }, process.env.JWT_SECRET || 'your-secret-key');
+                res.json({
+                    success: true,
+                    token,
+                    user: { id: result.insertId, full_name, username, profile_image }
+                });
+            });
+        }
+    );
+});
+
+/* ===================== PROFILE IMAGE ===================== */
+app.put('/api/users/profile-image/:username', upload.single('profile_image'), (req, res) => {
+    const profile_image = req.file?.filename;
+
+    if (!profile_image) {
+        return res.status(400).json({ message: 'No image uploaded' });
+    }
+
+    db.query(
+        'UPDATE users SET profile_image = ? WHERE username = ?',
+        [profile_image, req.params.username],
+        err => {
+            if (err) return res.status(500).json({ message: 'Update failed' });
+            res.json({ success: true, profile_image });
+        }
+    );
+});
+
+/* ===================== TODO ROUTES ===================== */
+
+// GET TODOS
 app.get('/api/todos/:username', (req, res) => {
-    // Fetches using 'target_datetime' from your table
-    const sql = 'SELECT * FROM todo WHERE username = ? ORDER BY target_datetime DESC';
-    db.query(sql, [req.params.username], (err, results) => {
-        if (err) return res.status(500).send(err);
-        res.send(results);
-    });
+    db.query(
+        'SELECT * FROM todo WHERE username = ? ORDER BY target_datetime DESC',
+        [req.params.username],
+        (err, results) => {
+            if (err) return res.status(500).json({ message: 'Error' });
+            res.json(results);
+        }
+    );
 });
 
+// ADD TODO
 app.post('/api/todos', (req, res) => {
-    const { username, task, deadline, status } = req.body; 
-    const sql = 'INSERT INTO todo (username, task, target_datetime, status) VALUES (?, ?, ?, ?)';
-    db.query(sql, [username, task, deadline, status || 'Todo'], (err, result) => {
-        if (err) return res.status(500).send(err);
-        res.status(201).send({ 
-            id: result.insertId, 
-            username, 
-            task, 
-            target_datetime: deadline, 
-            status: status || 'Todo' 
-        });
-    });
+    const { username, task, deadline, status } = req.body;
+
+    db.query(
+        'INSERT INTO todo (username, task, target_datetime, status) VALUES (?, ?, ?, ?)',
+        [username, task, deadline, status || 'Todo'],
+        (err, result) => {
+            if (err) return res.status(500).json({ message: 'Insert failed' });
+            res.status(201).json({
+                id: result.insertId,
+                username,
+                task,
+                target_datetime: deadline,
+                status: status || 'Todo'
+            });
+        }
+    );
 });
 
+// UPDATE TODO
 app.put('/api/todos/:id', (req, res) => {
-    const sql = 'UPDATE todo SET status = ? WHERE id = ?';
-    db.query(sql, [req.body.status, req.params.id], (err) => {
-        if (err) return res.status(500).send(err);
-        res.send({ success: true });
-    });
+    db.query(
+        'UPDATE todo SET status = ? WHERE id = ?',
+        [req.body.status, req.params.id],
+        err => {
+            if (err) return res.status(500).json({ message: 'Update failed' });
+            res.json({ success: true });
+        }
+    );
 });
 
+// DELETE TODO
 app.delete('/api/todos/:id', (req, res) => {
-    db.query('DELETE FROM todo WHERE id = ?', [req.params.id], (err) => {
-        if (err) return res.status(500).send(err);
-        res.send({ success: true });
-    });
+    db.query(
+        'DELETE FROM todo WHERE id = ?',
+        [req.params.id],
+        err => {
+            if (err) return res.status(500).json({ message: 'Delete failed' });
+            res.json({ success: true });
+        }
+    );
 });
 
-app.listen(port, () => console.log(`Server at http://localhost:${port}`));
+/* ===================== START SERVER ===================== */
+app.listen(port, () => {
+    console.log(`Server running at http://localhost:${port}`);
+    
+});
